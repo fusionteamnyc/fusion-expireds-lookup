@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from engine import (
-    PROPERTY_TYPE_OPTIONS,
+    PROPERTY_TYPE_OPTIONS, UI_LABEL_TO_INTERNAL,
     process_row, build_idi_export, df_to_csv_with_title,
     load_csv_smart, clear_cache, is_entity,
 )
@@ -31,102 +31,175 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+    /* === DARK THEME === */
+    
+    /* Hide Streamlit chrome */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     header {visibility: hidden;}
     
-    html, body, [class*="css"] {
+    /* Force dark background app-wide */
+    .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"], .main {
+        background-color: #0a0a0a !important;
+    }
+    
+    /* Body text default */
+    html, body, [class*="css"], .stMarkdown, p, span, div, label {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-        color: #1a1a1a;
+        color: #e8e8e8 !important;
     }
     
-    h1, h2, h3 {
-        font-family: 'Playfair Display', Georgia, serif;
-        font-weight: 600;
-        color: #0a0a0a;
-        letter-spacing: -0.02em;
+    /* Serif headings - white */
+    h1, h2, h3, h4 {
+        font-family: 'Playfair Display', Georgia, serif !important;
+        font-weight: 600 !important;
+        color: #ffffff !important;
+        letter-spacing: -0.02em !important;
     }
     
+    /* Muted secondary text */
+    .muted, p {
+        color: #999 !important;
+    }
+    
+    /* Section dividers - subtle white line */
     .section-divider {
-        border-top: 1px solid #e5e5e5;
+        border-top: 1px solid #2a2a2a;
         margin: 3rem 0 2rem 0;
     }
     
+    /* Result card - dark with subtle border */
     .result-card {
-        background: #fafafa;
-        border: 1px solid #e5e5e5;
+        background: #1a1a1a;
+        border: 1px solid #2a2a2a;
         border-radius: 8px;
         padding: 1.5rem 2rem;
         margin: 1rem 0;
     }
     .result-card .label {
-        color: #888;
-        font-size: 0.78rem;
-        text-transform: uppercase;
-        letter-spacing: 0.08em;
-        margin-bottom: 0.2rem;
+        color: #777 !important;
+        font-size: 0.78rem !important;
+        text-transform: uppercase !important;
+        letter-spacing: 0.08em !important;
+        margin-bottom: 0.2rem !important;
     }
     .result-card .value {
-        color: #1a1a1a;
-        font-size: 1.05rem;
-        margin-bottom: 1rem;
-        font-weight: 500;
+        color: #f5f5f5 !important;
+        font-size: 1.05rem !important;
+        margin-bottom: 1rem !important;
+        font-weight: 500 !important;
     }
     
+    /* Primary buttons - white on black */
     .stButton > button {
-        background-color: #1a1a1a;
-        color: #ffffff;
-        border: none;
-        border-radius: 4px;
-        padding: 0.7rem 2rem;
-        font-weight: 500;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        font-size: 0.85rem;
-        transition: all 0.2s ease;
+        background-color: #ffffff !important;
+        color: #0a0a0a !important;
+        border: none !important;
+        border-radius: 4px !important;
+        padding: 0.7rem 2rem !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.05em !important;
+        text-transform: uppercase !important;
+        font-size: 0.85rem !important;
+        transition: all 0.2s ease !important;
     }
     .stButton > button:hover {
-        background-color: #b8932f;
-        color: #ffffff;
+        background-color: #b8932f !important;
+        color: #ffffff !important;
+    }
+    .stButton > button:disabled {
+        background-color: #2a2a2a !important;
+        color: #555 !important;
     }
     
+    /* Download buttons - outlined white */
     .stDownloadButton > button {
-        background-color: #ffffff;
-        color: #1a1a1a;
-        border: 1px solid #1a1a1a;
-        border-radius: 4px;
-        padding: 0.7rem 2rem;
-        font-weight: 500;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        font-size: 0.85rem;
+        background-color: transparent !important;
+        color: #ffffff !important;
+        border: 1px solid #ffffff !important;
+        border-radius: 4px !important;
+        padding: 0.7rem 2rem !important;
+        font-weight: 500 !important;
+        letter-spacing: 0.05em !important;
+        text-transform: uppercase !important;
+        font-size: 0.85rem !important;
     }
     .stDownloadButton > button:hover {
-        background-color: #1a1a1a;
-        color: #ffffff;
+        background-color: #ffffff !important;
+        color: #0a0a0a !important;
     }
     
+    /* Form inputs - dark fields */
+    .stTextInput input, .stSelectbox div[data-baseweb="select"] > div {
+        background-color: #1a1a1a !important;
+        color: #f5f5f5 !important;
+        border: 1px solid #2a2a2a !important;
+    }
+    .stTextInput input::placeholder {
+        color: #666 !important;
+    }
+    
+    /* File uploader - dark dashed */
     [data-testid="stFileUploader"] {
-        background: #fafafa;
-        border: 2px dashed #cccccc;
-        border-radius: 8px;
-        padding: 1rem;
+        background: #1a1a1a !important;
+        border: 2px dashed #444 !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+    }
+    [data-testid="stFileUploader"] section, 
+    [data-testid="stFileUploader"] label {
+        background-color: transparent !important;
+        color: #ccc !important;
     }
     
+    /* Expander - dark */
+    [data-testid="stExpander"], .stExpander {
+        background-color: #1a1a1a !important;
+        border: 1px solid #2a2a2a !important;
+        border-radius: 8px !important;
+    }
+    [data-testid="stExpander"] summary {
+        color: #ccc !important;
+    }
+    
+    /* Progress bar - gold accent */
     .stProgress > div > div > div > div {
-        background-color: #b8932f;
+        background-color: #b8932f !important;
+    }
+    .stProgress > div > div > div {
+        background-color: #2a2a2a !important;
     }
     
+    /* Alerts (warning, success) - dark styled */
+    .stAlert {
+        background-color: #1a1a1a !important;
+        border: 1px solid #2a2a2a !important;
+        color: #e8e8e8 !important;
+    }
+    
+    /* Metric cards */
+    [data-testid="stMetricValue"], [data-testid="stMetricLabel"] {
+        color: #f5f5f5 !important;
+    }
+    [data-testid="stMetric"] {
+        background-color: #1a1a1a !important;
+        border: 1px solid #2a2a2a !important;
+        border-radius: 8px !important;
+        padding: 1rem !important;
+    }
+    
+    /* Footer */
     .footer-credit {
         text-align: center;
-        color: #999;
+        color: #555 !important;
         font-size: 0.8rem;
         margin-top: 4rem;
         padding-top: 1.5rem;
-        border-top: 1px solid #eeeeee;
+        border-top: 1px solid #2a2a2a;
         letter-spacing: 0.05em;
     }
     
+    /* Status pills */
     .status-pill {
         display: inline-block;
         padding: 0.3rem 0.9rem;
@@ -136,12 +209,12 @@ st.markdown("""
         letter-spacing: 0.05em;
         text-transform: uppercase;
     }
-    .pill-found   { background: #e8f5e9; color: #2e7d32; }
-    .pill-coop    { background: #fff8e1; color: #8a6d3b; }
-    .pill-sponsor { background: #fce4ec; color: #ad1457; }
-    .pill-missing { background: #f5f5f5; color: #757575; }
-    .pill-mismatch { background: #fff3e0; color: #bf6a02; }
-    .pill-match    { background: #e3f2fd; color: #1565c0; }
+    .pill-found    { background: #1b3a1b; color: #7ed27e !important; }
+    .pill-coop     { background: #3a2f1b; color: #d4b27e !important; }
+    .pill-sponsor  { background: #3a1b2a; color: #d47ea0 !important; }
+    .pill-missing  { background: #2a2a2a; color: #999 !important; }
+    .pill-mismatch { background: #3a2a1b; color: #d49d5a !important; }
+    .pill-match    { background: #1b2a3a; color: #7eb0d4 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -150,14 +223,17 @@ st.markdown("""
 # HEADER
 # =====================================================================
 logo_path = Path(__file__).parent / "static" / "logo.png"
-col_logo, _ = st.columns([3, 1])
-with col_logo:
-    if logo_path.exists():
-        st.image(str(logo_path), width=280)
+if logo_path.exists():
+    col_a, col_b, col_c = st.columns([1, 2, 1])
+    with col_b:
+        st.image(str(logo_path), use_container_width=True)
 
-st.markdown("# Expired Listings Lookup")
 st.markdown(
-    "<p style='color:#666; font-size:1rem; margin-top:-0.5rem;'>"
+    "<h1 style='text-align:center; margin-top: 2rem;'>Expired Listings Lookup</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<p style='text-align:center; color:#888; font-size:1rem; margin-top:-0.5rem;'>"
     "Find the owner of record for any NYC property — instantly or in bulk."
     "</p>",
     unsafe_allow_html=True
@@ -200,9 +276,11 @@ with st.form("single_search_form"):
 
 if single_submit and single_address:
     clear_cache()
+    # Translate the user-friendly dropdown label to the internal type the engine knows
+    internal_type = UI_LABEL_TO_INTERNAL.get(single_type, single_type)
     with st.spinner("Looking up owner information..."):
         row = {
-            'Property Type': single_type,
+            'Property Type': internal_type,
             'Address': single_address,
             'Area': single_area or '',
             'Check Owner Name 1': single_check_name or '',
