@@ -647,6 +647,15 @@ def make_title_row(num_columns):
     title = f"Fusion Team - Expired Listings - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
     return [title] + [''] * (num_columns - 1)
 
+def _safe_str(value):
+    """Coerce any value (NaN, None, float, missing) to a clean string."""
+    if value is None:
+        return ''
+    s = str(value).strip()
+    if s.lower() == 'nan':
+        return ''
+    return s
+
 def build_idi_export(out_df):
     """Build the IDI skip-trace export from the enriched DataFrame.
     
@@ -656,29 +665,30 @@ def build_idi_export(out_df):
     import pandas as pd
     rows = []
     for _, r in out_df.iterrows():
-        behavior = r.get('lookup_behavior_applied')
-        property_type = str(r.get('Property Type', ''))
-        is_sponsor = bool(r.get('is_sponsor_unit'))
+        behavior = _safe_str(r.get('lookup_behavior_applied'))
+        property_type = _safe_str(r.get('Property Type'))
+        is_sponsor_val = _safe_str(r.get('is_sponsor_unit'))
+        is_sponsor = is_sponsor_val.lower() in ('true', '1', 'yes')
         is_coop = behavior == 'coop_no_lookup'
         
         if is_sponsor or behavior == 'excluded':
             continue
         
-        final_name = str(r.get('final_owner_name_for_idi') or '').strip()
+        final_name = _safe_str(r.get('final_owner_name_for_idi'))
         
         if is_coop:
             # Co-op: address-based search (resident shareholder)
+            street_for_coop = _safe_str(r.get('cleaned_address')) or _safe_str(r.get('Address'))
             row_data = {
                 'First Name': '', 'Last Name': '', 'Company': '',
-                'Street Address': r.get('cleaned_address') or r.get('Address', ''),
+                'Street Address': street_for_coop,
                 'City': '', 'State': 'NY', 'Zip': '',
                 'Property Type': property_type,
-                'Property Address (full)': r.get('Address'),
-                'Property Status': r.get('Notes.1', ''),
+                'Property Address (full)': _safe_str(r.get('Address')),
+                'Property Status': _safe_str(r.get('Notes.1')),
                 'Search Strategy': 'reverse-address (co-op shareholder)',
-                'Name Match Check': r.get('name_match_check', ''),
+                'Name Match Check': _safe_str(r.get('name_match_check')),
             }
-            # If user provided a name, populate it too (helps IDI matching)
             if final_name:
                 if is_entity(final_name):
                     row_data['Company'] = final_name
@@ -693,20 +703,26 @@ def build_idi_export(out_df):
         
         if not final_name:
             # No owner found AND no user-provided name
+            street_for_no_owner = _safe_str(r.get('cleaned_address')) or _safe_str(r.get('Address'))
             rows.append({
                 'First Name': '', 'Last Name': '', 'Company': '',
-                'Street Address': r.get('cleaned_address') or r.get('Address', ''),
+                'Street Address': street_for_no_owner,
                 'City': '', 'State': 'NY', 'Zip': '',
                 'Property Type': property_type,
-                'Property Address (full)': r.get('Address'),
-                'Property Status': r.get('Notes.1', ''),
+                'Property Address (full)': _safe_str(r.get('Address')),
+                'Property Status': _safe_str(r.get('Notes.1')),
                 'Search Strategy': 'reverse-address (no owner found)',
-                'Name Match Check': r.get('name_match_check', ''),
+                'Name Match Check': _safe_str(r.get('name_match_check')),
             })
             continue
         
-        addr_full = r.get('dos_process_address') or r.get('owner_mailing_address') or ''
-        addr_parts = [p.strip() for p in str(addr_full).split(',')]
+        # Build the mailing address, safely
+        addr_full = _safe_str(r.get('dos_process_address')) or _safe_str(r.get('owner_mailing_address'))
+        if not addr_full:
+            # No mailing address from ACRIS - fall back to property address
+            addr_full = _safe_str(r.get('cleaned_address')) or _safe_str(r.get('Address'))
+        
+        addr_parts = [p.strip() for p in addr_full.split(',') if p.strip()]
         city = state = zipcode = ''
         street = addr_full
         if len(addr_parts) >= 3:
@@ -726,18 +742,18 @@ def build_idi_export(out_df):
             company = ''
         
         rows.append({
-            'First Name': first_name.strip(),
-            'Last Name': last_name.strip(),
-            'Company': company.strip(),
-            'Street Address': street.strip(),
-            'City': city.strip(),
-            'State': state.strip() or 'NY',
-            'Zip': zipcode.strip(),
+            'First Name': _safe_str(first_name),
+            'Last Name': _safe_str(last_name),
+            'Company': _safe_str(company),
+            'Street Address': _safe_str(street),
+            'City': _safe_str(city),
+            'State': _safe_str(state) or 'NY',
+            'Zip': _safe_str(zipcode),
             'Property Type': property_type,
-            'Property Address (full)': r.get('Address'),
-            'Property Status': r.get('Notes.1', ''),
-            'Search Strategy': 'by owner name' if r.get('owner_names') else 'user-provided name (acris empty)',
-            'Name Match Check': r.get('name_match_check', ''),
+            'Property Address (full)': _safe_str(r.get('Address')),
+            'Property Status': _safe_str(r.get('Notes.1')),
+            'Search Strategy': 'by owner name' if _safe_str(r.get('owner_names')) else 'user-provided name (acris empty)',
+            'Name Match Check': _safe_str(r.get('name_match_check')),
         })
     return pd.DataFrame(rows)
 

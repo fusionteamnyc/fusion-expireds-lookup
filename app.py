@@ -90,8 +90,9 @@ st.markdown("""
         font-weight: 500 !important;
     }
     
-    /* Default button - dark with white text (Run batch lookup) */
-    .stButton > button {
+    /* Default button - dark with white text (Run Batch Lookup is one of these) */
+    /* Important: explicitly reset child elements so popover styles don't leak in */
+    div[data-testid="stButton"] > button {
         background-color: #1a1a1a !important;
         color: #ffffff !important;
         border: 1px solid #2a2a2a !important;
@@ -103,13 +104,28 @@ st.markdown("""
         font-size: 0.85rem !important;
         transition: all 0.2s ease !important;
     }
-    .stButton > button:hover {
+    div[data-testid="stButton"] > button > div,
+    div[data-testid="stButton"] > button > div > p,
+    div[data-testid="stButton"] > button p,
+    div[data-testid="stButton"] > button span {
+        background-color: transparent !important;
+        color: #ffffff !important;
+        font-weight: 500 !important;
+    }
+    div[data-testid="stButton"] > button:hover {
         background-color: #b8932f !important;
         color: #ffffff !important;
         border-color: #b8932f !important;
     }
-    .stButton > button:disabled {
+    div[data-testid="stButton"] > button:hover * {
+        background-color: transparent !important;
+        color: #ffffff !important;
+    }
+    div[data-testid="stButton"] > button:disabled {
         background-color: #1a1a1a !important;
+        color: #555 !important;
+    }
+    div[data-testid="stButton"] > button:disabled * {
         color: #555 !important;
     }
     
@@ -466,36 +482,62 @@ if run_batch and uploaded_file:
     
     progress = st.progress(0.0)
     status_box = st.empty()
+    error_log = st.empty()
     
     enriched_rows = []
     consecutive_failures = 0
     early_warning_shown = False
+    rows_with_errors = []
+    early_check_done = False
     
     for i, row in df.iterrows():
         addr = str(row.get('Address', '')).strip()
         if not addr:
             continue
         status_box.markdown(
-            f"<p style='color:#666; font-size:0.9rem;'>"
+            f"<p style='color:#999; font-size:0.9rem;'>"
             f"Processing {i+1} of {n} &nbsp;·&nbsp; "
             f"{row.get('Property Type', '?')} &nbsp;·&nbsp; {addr}"
             f"</p>",
             unsafe_allow_html=True
         )
-        enrichment = process_row(row)
-        enriched_rows.append({**row.to_dict(), **enrichment})
         
-        # Early-failure detection
-        if enrichment.get('lookup_status') == 'address not found':
+        # Wrap each row in try/except so one bad row doesn't kill the whole batch
+        try:
+            enrichment = process_row(row)
+            enriched_rows.append({**row.to_dict(), **enrichment})
+            
+            if enrichment.get('lookup_status') == 'address not found':
+                consecutive_failures += 1
+            else:
+                consecutive_failures = 0
+        except Exception as e:
+            rows_with_errors.append({'row_number': i+1, 'address': addr, 'error': str(e)[:200]})
+            # Add a partial row so the count stays correct
+            enriched_rows.append({**row.to_dict(), 'lookup_status': f'ERROR: {str(e)[:100]}'})
             consecutive_failures += 1
-        else:
-            consecutive_failures = 0
         
+        # === EARLY-WARNING CHECKS ===
+        
+        # Check 1: After 15 rows, if >75% are 'address not found', warn loudly
+        if i == 14 and not early_check_done:  # at row 15
+            early_check_done = True
+            not_found = sum(1 for r in enriched_rows
+                            if r.get('lookup_status') == 'address not found')
+            if not_found >= 12:  # 12 of 15 = 80% failing
+                st.error(
+                    "⚠️ **EARLY WARNING:** 80%+ of the first 15 addresses failed to geocode. "
+                    "The NYC mapping service appears to be rate-limited or unavailable. "
+                    "Recommend stopping this run and trying again in 5-10 minutes. "
+                    "Continuing will likely produce mostly empty results."
+                )
+        
+        # Check 2: If 10 in a row fail, show a warning
         if consecutive_failures >= 10 and not early_warning_shown:
             st.warning(
-                "⚠️ Many addresses failing to geocode. This may indicate the "
-                "NYC mapping service is rate-limited. Results will continue but "
-                "may include false 'address not found' results — please re-run if needed."
+                "⚠️ Many addresses failing to geocode in a row. The NYC mapping "
+                "service may be rate-limited. Results will continue but may include "
+                "false 'address not found' entries — consider re-running later."
             )
             early_warning_shown = True
         
@@ -503,20 +545,45 @@ if run_batch and uploaded_file:
         time.sleep(1.5)
     
     out_df = pd.DataFrame(enriched_rows)
-    idi_df = build_idi_export(out_df)
+    
+    # Build IDI export, but if it crashes, still let the user download the full file
+    try:
+        idi_df = build_idi_export(out_df)
+        idi_build_error = None
+    except Exception as e:
+        idi_df = pd.DataFrame()
+        idi_build_error = str(e)
     
     progress.empty()
     status_box.empty()
     
+    # If individual rows crashed, show a summary
+    if rows_with_errors:
+        with st.expander(f"⚠️ {len(rows_with_errors)} row(s) had errors during processing"):
+            for err in rows_with_errors[:20]:
+                st.markdown(
+                    f"<p style='color:#bf6a02; font-size:0.85rem;'>"
+                    f"Row {err['row_number']}: {err['address']} — {err['error']}"
+                    f"</p>",
+                    unsafe_allow_html=True
+                )
+            if len(rows_with_errors) > 20:
+                st.markdown(f"...and {len(rows_with_errors) - 20} more")
+    
+    if idi_build_error:
+        st.warning(
+            f"Could not build the skip-trace file ({idi_build_error}), "
+            f"but the full data file is ready below."
+        )
+    
     # ----- Results summary -----
     owners_found = (out_df['owner_names'].notna() & (out_df['owner_names'] != '')).sum()
-    llc_count = int(out_df['owner_is_entity'].sum())
-    sponsor_count = int(out_df['is_sponsor_unit'].sum())
+    llc_count = int(out_df['owner_is_entity'].sum()) if 'owner_is_entity' in out_df.columns else 0
+    sponsor_count = int(out_df['is_sponsor_unit'].sum()) if 'is_sponsor_unit' in out_df.columns else 0
     coop_count = out_df['lookup_status'].str.contains('no individual deed', na=False).sum()
     
-    # Name-check stats
-    matches = (out_df['name_match_check'] == 'match (verified)').sum()
-    mismatches = (out_df['name_match_check'] == 'mismatch -- investigate').sum()
+    matches = (out_df['name_match_check'] == 'match (verified)').sum() if 'name_match_check' in out_df.columns else 0
+    mismatches = (out_df['name_match_check'] == 'mismatch -- investigate').sum() if 'name_match_check' in out_df.columns else 0
     
     st.markdown("### Results")
     
@@ -528,16 +595,16 @@ if run_batch and uploaded_file:
     
     if matches or mismatches:
         st.markdown(
-            f"<p style='color:#666; font-size:0.9rem; margin-top:1rem;'>"
+            f"<p style='color:#999; font-size:0.9rem; margin-top:1rem;'>"
             f"<strong>Name cross-check:</strong> "
-            f"<span style='color:#1565c0;'>{matches} verified</span>, "
-            f"<span style='color:#bf6a02;'>{mismatches} mismatches to investigate</span>"
+            f"<span style='color:#7eb0d4;'>{matches} verified</span>, "
+            f"<span style='color:#d49d5a;'>{mismatches} mismatches to investigate</span>"
             f"</p>",
             unsafe_allow_html=True
         )
     
     st.markdown(
-        f"<p style='color:#666; font-size:0.9rem;'>"
+        f"<p style='color:#999; font-size:0.9rem;'>"
         f"Of the owners found, <strong>{llc_count}</strong> are business entities. "
         f"Skip-trace file contains <strong>{len(idi_df)}</strong> rows ready for upload."
         f"</p>",
@@ -546,23 +613,30 @@ if run_batch and uploaded_file:
     
     # ----- Build the two output CSVs with title rows -----
     full_csv = df_to_csv_with_title(out_df).encode('utf-8')
-    idi_csv = df_to_csv_with_title(idi_df).encode('utf-8')
+    idi_csv = df_to_csv_with_title(idi_df).encode('utf-8') if len(idi_df) else None
+    
+    # Timestamped filenames so multiple runs don't collide in Downloads
+    from datetime import datetime
+    stamp = datetime.now().strftime('%Y-%m-%d_%H%M')
+    full_filename = f'fusion_owners_full_{stamp}.csv'
+    idi_filename = f'fusion_owners_for_skiptrace_{stamp}.csv'
     
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
         st.download_button(
             label="⬇  Full Data File",
             data=full_csv,
-            file_name="fusion_owners_full.csv",
+            file_name=full_filename,
             mime="text/csv",
         )
     with col_dl2:
-        st.download_button(
-            label="⬇  Skip-Trace Upload File",
-            data=idi_csv,
-            file_name="fusion_owners_for_skiptrace.csv",
-            mime="text/csv",
-        )
+        if idi_csv:
+            st.download_button(
+                label="⬇  Skip-Trace Upload File",
+                data=idi_csv,
+                file_name=idi_filename,
+                mime="text/csv",
+            )
 
 
 # =====================================================================
