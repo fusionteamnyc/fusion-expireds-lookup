@@ -206,9 +206,7 @@ st.markdown("""
     [data-testid="stFileUploader"] button,
     [data-testid="stFileUploader"] button *,
     [data-testid="stFileUploaderDropzone"] button,
-    [data-testid="stFileUploaderDropzone"] button *,
-    [data-testid="stBaseButton-secondary"],
-    [data-testid="stBaseButton-secondary"] * {
+    [data-testid="stFileUploaderDropzone"] button * {
         background-color: #ffffff !important;
         color: #000000 !important;
         border: none !important;
@@ -216,8 +214,8 @@ st.markdown("""
     }
     [data-testid="stFileUploader"] button:hover,
     [data-testid="stFileUploader"] button:hover *,
-    [data-testid="stBaseButton-secondary"]:hover,
-    [data-testid="stBaseButton-secondary"]:hover * {
+    [data-testid="stFileUploaderDropzone"] button:hover,
+    [data-testid="stFileUploaderDropzone"] button:hover * {
         background-color: #b8932f !important;
         color: #ffffff !important;
     }
