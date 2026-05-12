@@ -40,17 +40,31 @@ PROPERTY_TYPE_BEHAVIOR = {
     'Mixed-use':            'building_lookup',
     'Rental unit':          'building_lookup',
     'Rental':               'building_lookup',
+    # Generic catch-all from the UI dropdown
+    'Other':                'building_lookup',
     # Excluded entirely
     'Vacant land':          'excluded',
     'Land':                 'excluded',
 }
 
 PROPERTY_TYPE_OPTIONS = [
-    'Condo', 'Co-op', 'Condop', 'Townhouse', 'House',
-    'Two-family home', 'Three-family home', 'Four-family home',
-    'Five-family home', 'Multifamily home', 'Mixed-use Building',
-    'Rental unit', 'Vacant land',
+    'Condo',
+    'Coop',
+    'House',
+    'Multi-Family',
+    'Mixed-use',
+    'Other',
 ]
+
+# Maps simplified UI labels back to internal types the engine knows about.
+UI_LABEL_TO_INTERNAL = {
+    'Condo':        'Condo',
+    'Coop':         'Co-op',
+    'House':        'House',
+    'Multi-Family': 'Multifamily home',
+    'Mixed-use':    'Mixed-use Building',
+    'Other':        'Other',
+}
 
 def get_behavior(property_type):
     if not property_type:
