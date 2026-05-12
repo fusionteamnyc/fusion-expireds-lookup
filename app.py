@@ -90,11 +90,11 @@ st.markdown("""
         font-weight: 500 !important;
     }
     
-    /* Primary buttons - white on black */
+    /* Default button - dark with white text (Run batch lookup) */
     .stButton > button {
-        background-color: #ffffff !important;
-        color: #0a0a0a !important;
-        border: none !important;
+        background-color: #1a1a1a !important;
+        color: #ffffff !important;
+        border: 1px solid #2a2a2a !important;
         border-radius: 4px !important;
         padding: 0.7rem 2rem !important;
         font-weight: 500 !important;
@@ -106,10 +106,29 @@ st.markdown("""
     .stButton > button:hover {
         background-color: #b8932f !important;
         color: #ffffff !important;
+        border-color: #b8932f !important;
     }
     .stButton > button:disabled {
-        background-color: #2a2a2a !important;
+        background-color: #1a1a1a !important;
         color: #555 !important;
+    }
+    
+    /* Form submit buttons (inside st.form, like "Look up owner") - white with black text */
+    .stForm button[kind="primaryFormSubmit"],
+    .stForm button[kind="secondaryFormSubmit"],
+    .stForm [data-testid="stFormSubmitButton"] button,
+    .stForm [data-testid="stFormSubmitButton"] button p,
+    .stForm [data-testid="stFormSubmitButton"] button span,
+    .stForm [data-testid="stFormSubmitButton"] button div {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border: none !important;
+        font-weight: 600 !important;
+    }
+    .stForm [data-testid="stFormSubmitButton"] button:hover,
+    .stForm [data-testid="stFormSubmitButton"] button:hover * {
+        background-color: #b8932f !important;
+        color: #ffffff !important;
     }
     
     /* Download buttons - outlined white */
@@ -139,6 +158,38 @@ st.markdown("""
         color: #666 !important;
     }
     
+    /* Dropdown popup - light background with PURE BLACK text */
+    /* Streamlit uses various DOM structures here; we hit them all */
+    [data-baseweb="popover"],
+    [data-baseweb="popover"] * {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    [data-baseweb="popover"] [aria-selected="true"] {
+        background-color: #f0f0f0 !important;
+        color: #000000 !important;
+    }
+    div[role="listbox"],
+    div[role="listbox"] * {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    li[role="option"],
+    li[role="option"] *,
+    [role="option"],
+    [role="option"] * {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        font-weight: 500 !important;
+    }
+    li[role="option"]:hover,
+    li[role="option"]:hover *,
+    [role="option"]:hover,
+    [role="option"]:hover * {
+        background-color: #f0f0f0 !important;
+        color: #000000 !important;
+    }
+    
     /* File uploader - dark dashed */
     [data-testid="stFileUploader"] {
         background: #1a1a1a !important;
@@ -150,6 +201,25 @@ st.markdown("""
     [data-testid="stFileUploader"] label {
         background-color: transparent !important;
         color: #ccc !important;
+    }
+    /* The Browse files button inside the uploader - PURE BLACK text on white */
+    [data-testid="stFileUploader"] button,
+    [data-testid="stFileUploader"] button *,
+    [data-testid="stFileUploaderDropzone"] button,
+    [data-testid="stFileUploaderDropzone"] button *,
+    [data-testid="stBaseButton-secondary"],
+    [data-testid="stBaseButton-secondary"] * {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+        border: none !important;
+        font-weight: 600 !important;
+    }
+    [data-testid="stFileUploader"] button:hover,
+    [data-testid="stFileUploader"] button:hover *,
+    [data-testid="stBaseButton-secondary"]:hover,
+    [data-testid="stBaseButton-secondary"]:hover * {
+        background-color: #b8932f !important;
+        color: #ffffff !important;
     }
     
     /* Expander - dark */
