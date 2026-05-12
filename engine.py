@@ -640,11 +640,17 @@ def process_row(row, user_name_columns=("Check Owner Name 1", "Check Owner Name 
 # Output file builders
 # =====================================================================
 
-def make_title_row(num_columns):
+def make_title_row(num_columns, requester=None):
     """Generate the timestamped title row. Returns a list of `num_columns`
     items where the first is the title text and the rest are blank.
+    
+    If `requester` is provided, includes it in the title.
     """
-    title = f"Fusion Team - Expired Listings - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    base = f"Fusion Team - Expired Listings - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    if requester:
+        title = f"{base} - Requested by: {requester}"
+    else:
+        title = base
     return [title] + [''] * (num_columns - 1)
 
 def _safe_str(value):
@@ -656,117 +662,309 @@ def _safe_str(value):
         return ''
     return s
 
-def build_idi_export(out_df):
-    """Build the IDI skip-trace export from the enriched DataFrame.
+def flag_bulk_owner_sponsors(out_df, min_units=3):
+    """Post-process: detect LLCs that own 3+ units in the same building.
     
-    Uses final_owner_name_for_idi (which may be ACRIS, sponsor, or user-provided
-    fallback). Excludes sponsor units and 'excluded' property types.
+    These are very likely sponsors (developers selling new construction).
+    Updates the is_sponsor_unit flag on those rows IN PLACE.
+    
+    Args:
+      out_df: enriched DataFrame from a batch run
+      min_units: minimum number of units to qualify as bulk-owning sponsor
     """
     import pandas as pd
-    rows = []
+    if out_df.empty:
+        return out_df
+    
+    # Group by (BBL prefix = building) + LLC name
+    # BBL is 10 chars: borough(1) + block(5) + lot(4)
+    # Same building = same borough+block; same LLC = same owner_names
+    
+    bulk_signatures = set()  # (borough+block, llc_name)
+    bbl_to_building = {}
+    
+    for idx, r in out_df.iterrows():
+        bbl = _safe_str(r.get('bbl'))
+        owner = _safe_str(r.get('owner_names'))
+        if not bbl or len(bbl) < 10 or not owner:
+            continue
+        # Use first owner if multiple
+        first_owner = owner.split('|')[0].strip()
+        if not is_entity(first_owner):
+            continue
+        building_key = bbl[:6]  # borough + block
+        sig = (building_key, first_owner.upper())
+        bbl_to_building[idx] = sig
+    
+    # Count occurrences of each (building, llc) signature
+    from collections import Counter
+    counts = Counter(bbl_to_building.values())
+    
+    # Any signature with >= min_units is a bulk-owner sponsor
+    bulk_signatures = {sig for sig, count in counts.items() if count >= min_units}
+    
+    if not bulk_signatures:
+        return out_df
+    
+    # Update is_sponsor_unit for matching rows
+    # Add the columns if they don't exist
+    if 'is_sponsor_unit' not in out_df.columns:
+        out_df['is_sponsor_unit'] = False
+    if 'sponsor_name' not in out_df.columns:
+        out_df['sponsor_name'] = ''
+    
+    for idx, sig in bbl_to_building.items():
+        if sig in bulk_signatures:
+            out_df.at[idx, 'is_sponsor_unit'] = True
+            existing = _safe_str(out_df.at[idx, 'sponsor_name'])
+            if not existing:
+                out_df.at[idx, 'sponsor_name'] = sig[1]
+    
+    return out_df
+
+
+def _addresses_match(a, b):
+    """Return True if two addresses appear to be the same building.
+    
+    Compares just the number+street portion of each (ignoring unit, city, state, zip).
+    Examples that match:
+      '125 Greenwich St #63G' == '125 Greenwich Street'
+      '125 Bond Street, Brooklyn, NY, 11217' == '125 Bond Street'
+      '670a Greene Avenue' == '670A Greene Ave'
+    """
+    if not a or not b:
+        return False
+    
+    def normalize(s):
+        s = str(s).lower().strip()
+        # Take everything before the FIRST comma (drops city/state/zip)
+        s = s.split(',')[0].strip()
+        # Take everything before unit/apt/floor indicators
+        s = re.split(r'\s+(?:#|apt\.?|unit|fl\.?|floor|suite|ste\.?)\s*', s, maxsplit=1)[0]
+        # Normalize street type abbreviations
+        s = re.sub(r'\b(street|st\.?)\b', 'st', s)
+        s = re.sub(r'\b(avenue|ave\.?)\b', 'ave', s)
+        s = re.sub(r'\b(boulevard|blvd\.?)\b', 'blvd', s)
+        s = re.sub(r'\b(place|pl\.?)\b', 'pl', s)
+        s = re.sub(r'\b(road|rd\.?)\b', 'rd', s)
+        s = re.sub(r'\b(drive|dr\.?)\b', 'dr', s)
+        s = re.sub(r'\b(north|n\.?)\b', 'n', s)
+        s = re.sub(r'\b(south|s\.?)\b', 's', s)
+        s = re.sub(r'\b(east|e\.?)\b', 'e', s)
+        s = re.sub(r'\b(west|w\.?)\b', 'w', s)
+        s = re.sub(r'[.,\']', ' ', s)
+        s = re.sub(r'\s+', ' ', s).strip()
+        return s
+    
+    return normalize(a) == normalize(b)
+
+def build_idi_export(out_df):
+    """Build the IDI skip-trace export with the Fusion Team format.
+    
+    Column order:
+      1. Owner First Name
+      2. Owner Last Name
+      3. LLC Name
+      4. Property Address (full)
+      5. Area
+      6. Property Type (may be flagged as "Sponsor Condo" / "Sponsor Coop")
+      7. Owner Mailing Address (blank if same building as property)
+      8. Property Status
+      9. Name Check (blank unless mismatch; shows USER's original name for comparison)
+    
+    Sort order:
+      1. Individual owners A-Z by last name
+      2. LLC owners A-Z by LLC name
+      3. Sponsor units at the bottom
+    """
+    import pandas as pd
+    individuals = []
+    llcs = []
+    sponsors = []
+    
     for _, r in out_df.iterrows():
         behavior = _safe_str(r.get('lookup_behavior_applied'))
-        property_type = _safe_str(r.get('Property Type'))
+        original_property_type = _safe_str(r.get('Property Type'))
         is_sponsor_val = _safe_str(r.get('is_sponsor_unit'))
         is_sponsor = is_sponsor_val.lower() in ('true', '1', 'yes')
         is_coop = behavior == 'coop_no_lookup'
+        property_address = _safe_str(r.get('Address'))
+        area = _safe_str(r.get('Area'))
+        property_status = _safe_str(r.get('Notes.1'))
         
-        if is_sponsor or behavior == 'excluded':
+        # Skip vacant land and other 'excluded' types entirely
+        if behavior == 'excluded':
             continue
         
-        final_name = _safe_str(r.get('final_owner_name_for_idi'))
+        # ACRIS findings
+        acris_names_str = _safe_str(r.get('owner_names'))
+        acris_first_name = acris_names_str.split('|')[0].strip() if acris_names_str else ''
         
-        if is_coop:
-            # Co-op: address-based search (resident shareholder)
-            street_for_coop = _safe_str(r.get('cleaned_address')) or _safe_str(r.get('Address'))
-            row_data = {
-                'First Name': '', 'Last Name': '', 'Company': '',
-                'Street Address': street_for_coop,
-                'City': '', 'State': 'NY', 'Zip': '',
-                'Property Type': property_type,
-                'Property Address (full)': _safe_str(r.get('Address')),
-                'Property Status': _safe_str(r.get('Notes.1')),
-                'Search Strategy': 'reverse-address (co-op shareholder)',
-                'Name Match Check': _safe_str(r.get('name_match_check')),
-            }
-            if final_name:
-                if is_entity(final_name):
-                    row_data['Company'] = final_name
-                elif ',' in final_name:
-                    last, first = final_name.split(',', 1)
-                    row_data['Last Name'] = last.strip()
-                    row_data['First Name'] = first.strip()
-                else:
-                    row_data['First Name'] = final_name
-            rows.append(row_data)
-            continue
+        # User's original name (for cross-check column)
+        user_name = ''
+        for col in ['Check Owner Name 1', 'Check Owner Name 2',
+                    "Potential Owner's Name", "Potential Owner's Name ",
+                    'Owner Name', "Owner's Name 1", "Owner's Name 2"]:
+            v = _safe_str(r.get(col))
+            if v and 'http' not in v.lower() and len(v) < 200:
+                user_name = v
+                break
         
-        if not final_name:
-            # No owner found AND no user-provided name
-            street_for_no_owner = _safe_str(r.get('cleaned_address')) or _safe_str(r.get('Address'))
-            rows.append({
-                'First Name': '', 'Last Name': '', 'Company': '',
-                'Street Address': street_for_no_owner,
-                'City': '', 'State': 'NY', 'Zip': '',
-                'Property Type': property_type,
-                'Property Address (full)': _safe_str(r.get('Address')),
-                'Property Status': _safe_str(r.get('Notes.1')),
-                'Search Strategy': 'reverse-address (no owner found)',
-                'Name Match Check': _safe_str(r.get('name_match_check')),
-            })
-            continue
+        name_check_value = _safe_str(r.get('name_match_check'))
         
-        # Build the mailing address, safely
-        addr_full = _safe_str(r.get('dos_process_address')) or _safe_str(r.get('owner_mailing_address'))
-        if not addr_full:
-            # No mailing address from ACRIS - fall back to property address
-            addr_full = _safe_str(r.get('cleaned_address')) or _safe_str(r.get('Address'))
-        
-        addr_parts = [p.strip() for p in addr_full.split(',') if p.strip()]
-        city = state = zipcode = ''
-        street = addr_full
-        if len(addr_parts) >= 3:
-            zipcode = addr_parts[-1]
-            state = addr_parts[-2]
-            city = addr_parts[-3]
-            street = ', '.join(addr_parts[:-3])
-        
-        if is_entity(final_name):
-            first_name, last_name, company = '', '', final_name
+        # Build the cross-check column: only fill if mismatch, show USER's name
+        if name_check_value == 'mismatch -- investigate' and user_name:
+            name_check_display = user_name
         else:
-            if ',' in final_name:
-                last_name, rest = final_name.split(',', 1)
-                first_name = rest.strip()
-            else:
-                first_name, last_name = final_name, ''
-            company = ''
+            name_check_display = ''
         
-        rows.append({
-            'First Name': _safe_str(first_name),
-            'Last Name': _safe_str(last_name),
-            'Company': _safe_str(company),
-            'Street Address': _safe_str(street),
-            'City': _safe_str(city),
-            'State': _safe_str(state) or 'NY',
-            'Zip': _safe_str(zipcode),
-            'Property Type': property_type,
-            'Property Address (full)': _safe_str(r.get('Address')),
-            'Property Status': _safe_str(r.get('Notes.1')),
-            'Search Strategy': 'by owner name' if _safe_str(r.get('owner_names')) else 'user-provided name (acris empty)',
-            'Name Match Check': _safe_str(r.get('name_match_check')),
-        })
-    return pd.DataFrame(rows)
+        # Determine the "final" name and whether it's an entity
+        final_name = _safe_str(r.get('final_owner_name_for_idi'))
+        owner_is_entity = bool(r.get('owner_is_entity')) and \
+                          _safe_str(r.get('owner_is_entity')).lower() in ('true', '1', 'yes')
+        # Fall back to detecting entity from the name itself
+        if not owner_is_entity and final_name and is_entity(final_name):
+            owner_is_entity = True
+        
+        # Build name fields
+        first_name = ''
+        last_name = ''
+        llc_name = ''
+        
+        if final_name:
+            if owner_is_entity:
+                llc_name = final_name
+            else:
+                if ',' in final_name:
+                    last_name, rest = final_name.split(',', 1)
+                    last_name = last_name.strip()
+                    first_name = rest.strip()
+                else:
+                    parts = final_name.split()
+                    if len(parts) >= 2:
+                        first_name = parts[0]
+                        last_name = ' '.join(parts[1:])
+                    else:
+                        last_name = final_name
+        
+        # Build owner mailing address
+        mailing_address = (_safe_str(r.get('dos_process_address'))
+                           or _safe_str(r.get('owner_mailing_address')))
+        
+        # If mailing address is at the same building as the property, leave blank
+        if mailing_address and _addresses_match(mailing_address, property_address):
+            mailing_address = ''
+        
+        # Sponsor unit: relabel property type
+        property_type_label = original_property_type
+        if is_sponsor:
+            if 'condo' in original_property_type.lower():
+                property_type_label = 'Sponsor Condo'
+            elif 'co-op' in original_property_type.lower() or 'coop' in original_property_type.lower():
+                property_type_label = 'Sponsor Coop'
+            elif 'condop' in original_property_type.lower():
+                property_type_label = 'Sponsor Condop'
+            else:
+                property_type_label = f'Sponsor {original_property_type}'
+        
+        row_data = {
+            'Owner First Name': first_name,
+            'Owner Last Name': last_name,
+            'LLC Name': llc_name,
+            'Property Address': property_address,
+            'Area': area,
+            'Property Type': property_type_label,
+            'Owner Mailing Address': mailing_address,
+            'Property Status': property_status,
+            'Name Check': name_check_display,
+        }
+        
+        # Route to the right tier for sorting
+        if is_sponsor:
+            sponsors.append(row_data)
+        elif llc_name:
+            llcs.append(row_data)
+        else:
+            individuals.append(row_data)
+    
+    # Sort each tier
+    individuals.sort(key=lambda x: (x.get('Owner Last Name', '').upper(),
+                                     x.get('Owner First Name', '').upper()))
+    llcs.sort(key=lambda x: x.get('LLC Name', '').upper())
+    sponsors.sort(key=lambda x: x.get('LLC Name', '').upper())
+    
+    # Concatenate: individuals first, then LLCs, then sponsors
+    all_rows = individuals + llcs + sponsors
+    
+    if not all_rows:
+        # Return empty DataFrame with the right columns
+        return pd.DataFrame(columns=[
+            'Owner First Name', 'Owner Last Name', 'LLC Name', 'Property Address',
+            'Area', 'Property Type', 'Owner Mailing Address', 'Property Status',
+            'Name Check'
+        ])
+    
+    return pd.DataFrame(all_rows)
 
-def df_to_csv_with_title(df, num_columns=None):
+def sort_full_export(out_df):
+    """Sort the full enriched DataFrame in the same 3-tier order as IDI:
+    1. Individual owners A-Z by last name
+    2. LLC owners A-Z by LLC name
+    3. Sponsor units at the bottom
+    
+    Returns a NEW sorted DataFrame; does not modify input.
+    """
+    import pandas as pd
+    if out_df.empty:
+        return out_df
+    
+    def sort_key(row):
+        # Tier: 0=individual, 1=LLC, 2=sponsor
+        is_sponsor = _safe_str(row.get('is_sponsor_unit')).lower() in ('true', '1', 'yes')
+        owner_name = _safe_str(row.get('owner_names'))
+        first_owner = owner_name.split('|')[0].strip() if owner_name else ''
+        
+        if is_sponsor:
+            tier = 2
+        elif first_owner and is_entity(first_owner):
+            tier = 1
+        else:
+            tier = 0
+        
+        # Within tier, sort by the owner name (or empty -> last)
+        # For individuals: parse out last name for proper alpha sort
+        if tier == 0 and first_owner:
+            if ',' in first_owner:
+                # Already "LAST, FIRST" - sort by full string
+                sort_name = first_owner.upper()
+            else:
+                # "FIRST LAST" - sort by last word
+                parts = first_owner.upper().split()
+                sort_name = parts[-1] if parts else ''
+        else:
+            sort_name = first_owner.upper() if first_owner else 'ZZZZZ'
+        
+        return (tier, sort_name)
+    
+    # Build a sort key column, sort, then drop it
+    out_df = out_df.copy()
+    out_df['_sort_key'] = out_df.apply(sort_key, axis=1)
+    out_df = out_df.sort_values('_sort_key').reset_index(drop=True)
+    out_df = out_df.drop(columns=['_sort_key'])
+    return out_df
+
+
     """Convert DataFrame to a CSV string with a title row at the very top.
     Returns a string. Caller can encode to bytes for download.
+    
+    If `requester` is provided, includes it in the title row.
     """
     import io
     import csv as csvmod
     
     if num_columns is None:
         num_columns = len(df.columns)
-    title_row = make_title_row(num_columns)
+    title_row = make_title_row(num_columns, requester=requester)
     
     buf = io.StringIO()
     writer = csvmod.writer(buf)
