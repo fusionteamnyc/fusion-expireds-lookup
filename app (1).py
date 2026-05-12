@@ -158,27 +158,34 @@ st.markdown("""
         color: #666 !important;
     }
     
-    /* Dropdown popup (Selectbox menu) - light bg with PURE BLACK text */
-    [data-baseweb="popover"] [role="listbox"],
-    [data-baseweb="popover"] ul,
-    [data-baseweb="menu"] {
+    /* Dropdown popup - light background with PURE BLACK text */
+    /* Streamlit uses various DOM structures here; we hit them all */
+    [data-baseweb="popover"],
+    [data-baseweb="popover"] * {
         background-color: #ffffff !important;
+        color: #000000 !important;
     }
-    [data-baseweb="popover"] [role="option"],
-    [data-baseweb="popover"] li,
-    [data-baseweb="menu"] li,
-    [data-baseweb="popover"] [role="option"] *,
-    [data-baseweb="popover"] li *,
-    [data-baseweb="popover"] [role="option"] div,
-    [data-baseweb="popover"] [role="option"] span {
+    [data-baseweb="popover"] [aria-selected="true"] {
+        background-color: #f0f0f0 !important;
+        color: #000000 !important;
+    }
+    div[role="listbox"],
+    div[role="listbox"] * {
+        background-color: #ffffff !important;
+        color: #000000 !important;
+    }
+    li[role="option"],
+    li[role="option"] *,
+    [role="option"],
+    [role="option"] * {
         background-color: #ffffff !important;
         color: #000000 !important;
         font-weight: 500 !important;
     }
-    [data-baseweb="popover"] [role="option"]:hover,
-    [data-baseweb="popover"] [role="option"]:hover *,
-    [data-baseweb="popover"] li:hover,
-    [data-baseweb="popover"] li:hover * {
+    li[role="option"]:hover,
+    li[role="option"]:hover *,
+    [role="option"]:hover,
+    [role="option"]:hover * {
         background-color: #f0f0f0 !important;
         color: #000000 !important;
     }
@@ -195,19 +202,20 @@ st.markdown("""
         background-color: transparent !important;
         color: #ccc !important;
     }
-    /* The Browse files button inside the uploader */
+    /* The Browse files button inside the uploader - PURE BLACK text on white */
     [data-testid="stFileUploader"] button,
     [data-testid="stFileUploader"] button *,
-    [data-testid="stFileUploader"] button p,
-    [data-testid="stFileUploader"] button span,
-    [data-testid="stFileUploader"] button div {
+    [data-testid="stFileUploaderDropzone"] button,
+    [data-testid="stFileUploaderDropzone"] button * {
         background-color: #ffffff !important;
         color: #000000 !important;
         border: none !important;
         font-weight: 600 !important;
     }
     [data-testid="stFileUploader"] button:hover,
-    [data-testid="stFileUploader"] button:hover * {
+    [data-testid="stFileUploader"] button:hover *,
+    [data-testid="stFileUploaderDropzone"] button:hover,
+    [data-testid="stFileUploaderDropzone"] button:hover * {
         background-color: #b8932f !important;
         color: #ffffff !important;
     }
