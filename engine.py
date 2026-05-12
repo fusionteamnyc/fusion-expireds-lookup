@@ -468,14 +468,19 @@ def cross_check_names(user_names, acris_names):
 # The main per-row processor
 # =====================================================================
 
-def process_row(row, user_name_columns=("Check Owner Name 1", "Check Owner Name 2")):
+def process_row(row, user_name_columns=("Check Owner Name 1", "Check Owner Name 2",
+                                         "Potential Owner's Name", "Potential Owner's Name ",
+                                         "Owner Name", "Owner's Name 1", "Owner's Name 2",
+                                         "Owner Name 1", "Owner Name 2", "Notes.1")):
     """Process a single property row.
     
     Args:
       row: dict-like with at least 'Address' and 'Property Type'.
-            May also include 'Area' and the user_name_columns for cross-check.
+            May also include 'Area' and any of the user_name_columns for cross-check.
       user_name_columns: tuple of column names that may contain a researcher-
-                         provided owner name (for cross-checking).
+                         provided owner name (for cross-checking). We accept
+                         several common variants so files with different
+                         column names still work.
     
     Returns:
       dict of new/enriched columns. Caller should merge this with the
@@ -485,8 +490,20 @@ def process_row(row, user_name_columns=("Check Owner Name 1", "Check Owner Name 
     property_type = str(row.get('Property Type', '')).strip()
     area = str(row.get('Area', '')).strip()
     
-    user_names = [str(row.get(c, '')).strip() for c in user_name_columns
-                  if str(row.get(c, '')).strip()]
+    # Collect names from any of the recognized columns
+    user_names = []
+    seen = set()
+    for col in user_name_columns:
+        val = str(row.get(col, '')).strip()
+        # Skip if empty, or looks like a URL/note (very long, contains http)
+        if not val or val.lower() in ('nan', 'no contact'):
+            continue
+        if 'http' in val.lower() or len(val) > 200:
+            continue
+        if val.lower() in seen:
+            continue
+        seen.add(val.lower())
+        user_names.append(val)
     
     behavior, behavior_note = get_behavior(property_type)
     
@@ -752,39 +769,64 @@ def df_to_csv_with_title(df, num_columns=None):
 def load_csv_smart(file_obj):
     """Read a CSV, auto-detecting a title row if present.
     
-    Logic:
-      1. Read first 2 rows raw.
-      2. If row 1 has only 1 non-empty cell (i.e. it's just a title) AND
-         row 2 contains real headers like 'Address' or 'Property Type',
-         treat row 1 as title and skip it.
-      3. Otherwise read normally.
+    Strategy:
+      1. Try reading normally. If it parses cleanly AND row 0 looks like real
+         headers (contains 'Address' or 'Property Type'), use as-is.
+      2. If parsing fails OR row 0 doesn't look like headers, try skipping
+         the first row (treating it as a title) and re-read.
+      3. If that also fails, raise the error.
     """
     import pandas as pd
     
-    # Reset to beginning if it's a file-like object
+    def _seek(f):
+        try:
+            f.seek(0)
+        except Exception:
+            pass
+    
+    # Strategy 1: read normally
+    _seek(file_obj)
     try:
-        file_obj.seek(0)
+        df = pd.read_csv(file_obj, dtype=str, keep_default_na=False)
+        cols_lower = [str(c).lower().strip() for c in df.columns]
+        if 'address' in cols_lower or 'property type' in cols_lower:
+            return df
     except Exception:
         pass
     
-    # Peek at the first two rows
-    peek = pd.read_csv(file_obj, header=None, nrows=2, dtype=str, keep_default_na=False)
-    
+    # Strategy 2: skip first row (title), try again
+    _seek(file_obj)
     try:
-        file_obj.seek(0)
+        df = pd.read_csv(file_obj, skiprows=1, dtype=str, keep_default_na=False)
+        cols_lower = [str(c).lower().strip() for c in df.columns]
+        if 'address' in cols_lower or 'property type' in cols_lower:
+            return df
     except Exception:
         pass
     
-    skiprows = 0
-    if len(peek) >= 2:
-        row0 = peek.iloc[0].tolist()
-        row1 = peek.iloc[1].tolist()
-        # Title row: most cells empty, only first is filled
-        non_empty_0 = sum(1 for c in row0 if str(c).strip())
-        # Row 1 looks like a real header if it has 'Property Type' or 'Address' in it
-        row1_text = ' '.join(str(c).lower() for c in row1)
-        if non_empty_0 == 1 and ('address' in row1_text or 'property type' in row1_text):
-            skiprows = 1
+    # Strategy 3: maybe headerless 8-column file (legacy StreetEasy export)
+    _seek(file_obj)
+    try:
+        df = pd.read_csv(file_obj, header=None, dtype=str, keep_default_na=False,
+                         names=['Property Type', 'Area', 'Address', 'Notes',
+                                'Price', 'Bed', 'Bath', 'Status'])
+        return df
+    except Exception:
+        pass
     
-    df = pd.read_csv(file_obj, skiprows=skiprows, dtype=str, keep_default_na=False)
+    # Strategy 4: try reading with the python engine (more forgiving)
+    _seek(file_obj)
+    try:
+        df = pd.read_csv(file_obj, dtype=str, keep_default_na=False,
+                         engine='python', on_bad_lines='skip')
+        cols_lower = [str(c).lower().strip() for c in df.columns]
+        if 'address' in cols_lower or 'property type' in cols_lower:
+            return df
+    except Exception:
+        pass
+    
+    # Strategy 5: python engine + skip first row
+    _seek(file_obj)
+    df = pd.read_csv(file_obj, skiprows=1, dtype=str, keep_default_na=False,
+                     engine='python', on_bad_lines='skip')
     return df
