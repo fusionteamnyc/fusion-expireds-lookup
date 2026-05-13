@@ -662,7 +662,7 @@ def _safe_str(value):
         return ''
     return s
 
-def flag_bulk_owner_sponsors(out_df, min_units=3):
+def flag_bulk_owner_sponsors(out_df, min_units=4):
     """Post-process: detect LLCs that own 3+ units in the same building.
     
     These are very likely sponsors (developers selling new construction).
@@ -912,6 +912,8 @@ def sort_full_export(out_df):
     2. LLC owners A-Z by LLC name
     3. Sponsor units at the bottom
     
+    Also reorders columns: IDI-style opening, then audit columns, then original input.
+    
     Returns a NEW sorted DataFrame; does not modify input.
     """
     import pandas as pd
@@ -951,7 +953,136 @@ def sort_full_export(out_df):
     out_df['_sort_key'] = out_df.apply(sort_key, axis=1)
     out_df = out_df.sort_values('_sort_key').reset_index(drop=True)
     out_df = out_df.drop(columns=['_sort_key'])
-    return out_df
+    
+    # ----- Add IDI-style display columns to the front -----
+    # These are computed from the existing data for easy scanning
+    display_rows = []
+    for _, r in out_df.iterrows():
+        original_property_type = _safe_str(r.get('Property Type'))
+        is_sponsor = _safe_str(r.get('is_sponsor_unit')).lower() in ('true', '1', 'yes')
+        property_address = _safe_str(r.get('Address'))
+        
+        final_name = _safe_str(r.get('final_owner_name_for_idi'))
+        owner_is_entity = _safe_str(r.get('owner_is_entity')).lower() in ('true', '1', 'yes')
+        if not owner_is_entity and final_name and is_entity(final_name):
+            owner_is_entity = True
+        
+        first_name = ''
+        last_name = ''
+        llc_name = ''
+        if final_name:
+            if owner_is_entity:
+                llc_name = final_name
+            else:
+                if ',' in final_name:
+                    last_part, first_part = final_name.split(',', 1)
+                    last_name = last_part.strip()
+                    first_name = first_part.strip()
+                else:
+                    parts = final_name.split()
+                    if len(parts) >= 2:
+                        first_name = parts[0]
+                        last_name = ' '.join(parts[1:])
+                    else:
+                        last_name = final_name
+        
+        mailing_address = (_safe_str(r.get('dos_process_address'))
+                           or _safe_str(r.get('owner_mailing_address')))
+        if mailing_address and _addresses_match(mailing_address, property_address):
+            mailing_address = ''
+        
+        # Property Type display (with sponsor label)
+        if is_sponsor:
+            if 'condo' in original_property_type.lower():
+                property_type_display = 'Sponsor Condo'
+            elif 'co-op' in original_property_type.lower() or 'coop' in original_property_type.lower():
+                property_type_display = 'Sponsor Coop'
+            elif 'condop' in original_property_type.lower():
+                property_type_display = 'Sponsor Condop'
+            else:
+                property_type_display = f'Sponsor {original_property_type}'
+        else:
+            property_type_display = original_property_type
+        
+        # Name Check: show user's original name only on mismatch
+        name_check_value = _safe_str(r.get('name_match_check'))
+        user_name = ''
+        for col in ['Check Owner Name 1', 'Check Owner Name 2',
+                    "Potential Owner's Name", "Potential Owner's Name ",
+                    'Owner Name', "Owner's Name 1", "Owner's Name 2"]:
+            v = _safe_str(r.get(col))
+            if v and 'http' not in v.lower() and len(v) < 200:
+                user_name = v
+                break
+        if name_check_value == 'mismatch -- investigate' and user_name:
+            name_check_display = user_name
+        else:
+            name_check_display = ''
+        
+        display_rows.append({
+            'Owner First Name': first_name,
+            'Owner Last Name': last_name,
+            'LLC Name': llc_name,
+            'Property Address': property_address,
+            'Area': _safe_str(r.get('Area')),
+            'Property Type': property_type_display,
+            'Owner Mailing Address': mailing_address,
+            'Property Status': _safe_str(r.get('Notes.1')),
+            'Name Check': name_check_display,
+        })
+    
+    display_df = pd.DataFrame(display_rows)
+    
+    # ----- Define column order for the full file -----
+    # Phase 1: IDI-style display columns (matches the skip-trace file opening)
+    idi_cols = ['Owner First Name', 'Owner Last Name', 'LLC Name',
+                'Property Address', 'Area', 'Property Type',
+                'Owner Mailing Address', 'Property Status', 'Name Check']
+    
+    # Phase 2: audit / diagnostic columns from enrichment
+    audit_cols = [
+        'owner_names', 'owner_is_entity', 'final_owner_name_for_idi', 'name_match_check',
+        'deed_date', 'deed_type', 'bbl',
+        'dos_entity_name', 'dos_id', 'dos_jurisdiction', 'dos_initial_date',
+        'dos_process_name', 'dos_process_address', 'dos_status_note',
+        'is_sponsor_unit', 'sponsor_name', 'sponsor_mailing_address',
+        'cleaned_address', 'unit_searched',
+        'lookup_behavior_applied', 'behavior_note',
+        'lookup_status', 'skip_trace_strategy',
+    ]
+    
+    # Phase 3: original input columns appended at the end.
+    # Order them logically: Notes (StreetEasy link) first, then Price/Bed/Bath/etc.
+    used_in_display = {'Address', 'Area', 'Property Type', 'Notes.1'}
+    
+    # Priority order for known columns
+    priority_originals = ['Notes', 'Price', 'Bed', 'Bath']
+    original_cols = []
+    
+    # Add priority columns first (in order, if they exist)
+    for col in priority_originals:
+        if col in out_df.columns and col not in used_in_display and col not in audit_cols:
+            original_cols.append(col)
+    
+    # Then everything else not yet shown
+    for col in out_df.columns:
+        if (col not in used_in_display
+                and col not in audit_cols
+                and col not in priority_originals):
+            original_cols.append(col)
+    
+    # Combine: display + audit + leftover originals
+    # Reset index so concat aligns properly
+    out_df = out_df.reset_index(drop=True)
+    display_df = display_df.reset_index(drop=True)
+    
+    # Build the audit slice (only columns that exist)
+    audit_slice = out_df[[c for c in audit_cols if c in out_df.columns]]
+    original_slice = out_df[original_cols]
+    
+    # Final concatenation
+    final_df = pd.concat([display_df, audit_slice, original_slice], axis=1)
+    return final_df
 
 
 def df_to_csv_with_title(df, num_columns=None, requester=None):
@@ -959,6 +1090,7 @@ def df_to_csv_with_title(df, num_columns=None, requester=None):
     Returns a string. Caller can encode to bytes for download.
     
     If `requester` is provided, includes it in the title row.
+    NaN/None values are written as empty strings (not "nan").
     """
     import io
     import csv as csvmod
@@ -972,9 +1104,9 @@ def df_to_csv_with_title(df, num_columns=None, requester=None):
     writer.writerow(title_row)
     # Header
     writer.writerow(list(df.columns))
-    # Data rows
+    # Data rows - convert NaN/None to empty strings via _safe_str
     for _, r in df.iterrows():
-        writer.writerow([r[c] for c in df.columns])
+        writer.writerow([_safe_str(r[c]) if r[c] is not None else '' for c in df.columns])
     return buf.getvalue()
 
 # =====================================================================
