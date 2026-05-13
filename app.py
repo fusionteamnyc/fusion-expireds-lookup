@@ -525,6 +525,11 @@ if uploaded_file is not None and not (requester_name or '').strip():
     st.info("👆 Please add your name above before running the lookup.")
 
 if run_batch and uploaded_file:
+    # Clear any previous batch results so we don't show stale data
+    for k in ['batch_results', 'batch_meta']:
+        if k in st.session_state:
+            del st.session_state[k]
+    
     requester = (requester_name or '').strip()
     clear_cache()
     
@@ -604,7 +609,7 @@ if run_batch and uploaded_file:
     out_df = pd.DataFrame(enriched_rows)
     
     # Post-process: detect LLCs that own 3+ units in same building (sponsor flag)
-    out_df = flag_bulk_owner_sponsors(out_df, min_units=3)
+    out_df = flag_bulk_owner_sponsors(out_df, min_units=4)
     
     # Sort the full file in the same 3-tier alphabetical order as the IDI file
     out_df = sort_full_export(out_df)
@@ -648,61 +653,86 @@ if run_batch and uploaded_file:
     matches = (out_df['name_match_check'] == 'match (verified)').sum() if 'name_match_check' in out_df.columns else 0
     mismatches = (out_df['name_match_check'] == 'mismatch -- investigate').sum() if 'name_match_check' in out_df.columns else 0
     
+    # ----- Save everything to session_state for persistence across reruns -----
+    from datetime import datetime
+    import re as _re
+    
+    full_csv = df_to_csv_with_title(out_df, requester=requester).encode('utf-8')
+    idi_csv = df_to_csv_with_title(idi_df, requester=requester).encode('utf-8') if len(idi_df) else None
+    
+    stamp = datetime.now().strftime('%Y-%m-%d_%H%M')
+    first_name = requester.split()[0].lower() if requester else 'user'
+    slug = _re.sub(r'[^a-z0-9-]', '', first_name) or 'user'
+    full_filename = f'fusion_owners_full_{stamp}_by-{slug}.csv'
+    idi_filename = f'fusion_owners_for_skiptrace_{stamp}_by-{slug}.csv'
+    
+    st.session_state['batch_results'] = {
+        'full_csv': full_csv,
+        'idi_csv': idi_csv,
+        'full_filename': full_filename,
+        'idi_filename': idi_filename,
+    }
+    st.session_state['batch_meta'] = {
+        'requester': requester,
+        'n': n,
+        'owners_found': int(owners_found),
+        'llc_count': llc_count,
+        'coop_count': int(coop_count),
+        'sponsor_count': sponsor_count,
+        'matches': int(matches),
+        'mismatches': int(mismatches),
+        'idi_count': len(idi_df),
+        'rows_with_errors': len(rows_with_errors),
+    }
+
+# ===== RENDER BATCH RESULTS (persistent across reruns) =====
+if 'batch_results' in st.session_state and 'batch_meta' in st.session_state:
+    br = st.session_state['batch_results']
+    bm = st.session_state['batch_meta']
+    
     st.markdown("### Results")
     
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Total processed", n)
-    m2.metric("Owners found", int(owners_found))
-    m3.metric("Co-ops (address-only)", int(coop_count))
-    m4.metric("Sponsor units excluded", sponsor_count)
+    m1.metric("Total processed", bm['n'])
+    m2.metric("Owners found", bm['owners_found'])
+    m3.metric("Co-ops (address-only)", bm['coop_count'])
+    m4.metric("Sponsor units excluded", bm['sponsor_count'])
     
-    if matches or mismatches:
+    if bm['matches'] or bm['mismatches']:
         st.markdown(
             f"<p style='color:#999; font-size:0.9rem; margin-top:1rem;'>"
             f"<strong>Name cross-check:</strong> "
-            f"<span style='color:#7eb0d4;'>{matches} verified</span>, "
-            f"<span style='color:#d49d5a;'>{mismatches} mismatches to investigate</span>"
+            f"<span style='color:#7eb0d4;'>{bm['matches']} verified</span>, "
+            f"<span style='color:#d49d5a;'>{bm['mismatches']} mismatches to investigate</span>"
             f"</p>",
             unsafe_allow_html=True
         )
     
     st.markdown(
         f"<p style='color:#999; font-size:0.9rem;'>"
-        f"Of the owners found, <strong>{llc_count}</strong> are business entities. "
-        f"Skip-trace file contains <strong>{len(idi_df)}</strong> rows ready for upload."
+        f"Of the owners found, <strong>{bm['llc_count']}</strong> are business entities. "
+        f"Skip-trace file contains <strong>{bm['idi_count']}</strong> rows ready for upload."
         f"</p>",
         unsafe_allow_html=True
     )
-    
-    # ----- Build the two output CSVs with title rows -----
-    full_csv = df_to_csv_with_title(out_df, requester=requester).encode('utf-8')
-    idi_csv = df_to_csv_with_title(idi_df, requester=requester).encode('utf-8') if len(idi_df) else None
-    
-    # Timestamped filenames with requester slug
-    from datetime import datetime
-    import re as _re
-    stamp = datetime.now().strftime('%Y-%m-%d_%H%M')
-    # Sanitize the requester name for a filename: first name only, alphanumeric+dash
-    first_name = requester.split()[0].lower() if requester else 'user'
-    slug = _re.sub(r'[^a-z0-9-]', '', first_name) or 'user'
-    full_filename = f'fusion_owners_full_{stamp}_by-{slug}.csv'
-    idi_filename = f'fusion_owners_for_skiptrace_{stamp}_by-{slug}.csv'
     
     col_dl1, col_dl2 = st.columns(2)
     with col_dl1:
         st.download_button(
             label="⬇  Full Data File",
-            data=full_csv,
-            file_name=full_filename,
+            data=br['full_csv'],
+            file_name=br['full_filename'],
             mime="text/csv",
+            key="dl_full_persistent",
         )
     with col_dl2:
-        if idi_csv:
+        if br['idi_csv']:
             st.download_button(
                 label="⬇  Skip-Trace Upload File",
-                data=idi_csv,
-                file_name=idi_filename,
+                data=br['idi_csv'],
+                file_name=br['idi_filename'],
                 mime="text/csv",
+                key="dl_idi_persistent",
             )
     
     # ----- Toggleable batch email -----
@@ -710,6 +740,7 @@ if run_batch and uploaded_file:
     want_email = st.checkbox(
         "Email a summary about this batch",
         value=False,
+        key="batch_email_toggle",
         help="Opens your email app with the summary pre-filled. Add a recipient and send."
     )
     
@@ -718,25 +749,25 @@ if run_batch and uploaded_file:
         body_lines = [
             "Fusion Team - Batch Owner Lookup Complete",
             "",
-            f"Run by: {requester}",
+            f"Run by: {bm['requester']}",
             f"Date: {_dt.now().strftime('%B %d, %Y at %I:%M %p')}",
-            f"Properties processed: {n}",
-            f"Owners found: {int(owners_found)}",
-            f"LLC entities: {llc_count}",
-            f"Co-ops (address-only): {int(coop_count)}",
-            f"Sponsor units flagged: {sponsor_count}",
+            f"Properties processed: {bm['n']}",
+            f"Owners found: {bm['owners_found']}",
+            f"LLC entities: {bm['llc_count']}",
+            f"Co-ops (address-only): {bm['coop_count']}",
+            f"Sponsor units flagged: {bm['sponsor_count']}",
         ]
-        if matches or mismatches:
-            body_lines.append(f"Name cross-check: {matches} verified, {mismatches} mismatches to investigate")
+        if bm['matches'] or bm['mismatches']:
+            body_lines.append(f"Name cross-check: {bm['matches']} verified, {bm['mismatches']} mismatches to investigate")
         body_lines.extend([
             "",
             "Output files in the runner's Downloads folder:",
-            f"  - {full_filename}",
-            f"  - {idi_filename}" if idi_csv else "  - (skip-trace file not generated)",
+            f"  - {br['full_filename']}",
+            f"  - {br['idi_filename']}" if br['idi_csv'] else "  - (skip-trace file not generated)",
             "",
             "-- Fusion Team Owner Lookup",
         ])
-        subject_text = f"Fusion Team Batch Complete - {n} properties - {requester}"
+        subject_text = f"Fusion Team Batch Complete - {bm['n']} properties - {bm['requester']}"
         body_text = "\n".join(body_lines)
         batch_mailto = f"mailto:?subject={quote(subject_text, safe='')}&body={quote(body_text, safe='')}"
         
