@@ -954,6 +954,7 @@ def sort_full_export(out_df):
     return out_df
 
 
+def df_to_csv_with_title(df, num_columns=None, requester=None):
     """Convert DataFrame to a CSV string with a title row at the very top.
     Returns a string. Caller can encode to bytes for download.
     
